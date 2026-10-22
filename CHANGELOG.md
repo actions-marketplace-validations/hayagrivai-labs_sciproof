@@ -6,6 +6,10 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+* A shell-pipeline tutorial for capturing and verifying non-Python experiments.
+
 * Numeric comparison (`--output-numeric`) supports tab-separated values (`.tsv`), compared with
   the declared tolerance like `.csv`.
 * Policy files with a leading UTF-8 BOM are accepted; the original file bytes remain covered by
@@ -13,6 +17,10 @@ All notable changes are listed here. The format follows
 * `verify --save-json` and `export -o` report an unwritable path as `error: cannot write ...` with
   exit status 3 instead of a traceback with exit status 1 (which means verification failed).
   `verify --save-json` now writes the file after the verdict is printed.
+* `created_at` must be an ISO 8601 timestamp with a timezone offset; a manifest with any other
+  value is rejected at validation instead of crashing `verify --policy` (max_age_days) or
+  `export --format openlineage` with a traceback. An OpenLineage export whose start time falls
+  out of range is a clean usage error instead of an `OverflowError`.
 
 ## [0.3.1] - 2026-10-21
 
