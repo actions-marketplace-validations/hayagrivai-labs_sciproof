@@ -6,21 +6,61 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
-### Added
+* Contributing is easier: a dev container (GitHub Codespaces) with the dependencies installed, a short
+  welcome for first issues and pull requests, `/take` to claim an issue labelled `help wanted`, and
+  claims without activity for 21 days go back to the pool.
+* `sciproof badge MANIFEST -o FILE.svg` verifies a manifest and writes a static SVG badge with the
+  verdict, whether the command was re-executed, and the date; nothing from the manifest goes into
+  it. The exit status is the verdict's.
+* `sciproof record --name NAME -- COMMAND` captures a command without declaring any file: the inputs
+  (files Python read) and outputs (files created or changed) are detected, a second run decides
+  which outputs are exact, numeric with a tolerance, or not declarable, and the equivalent
+  `capture` command is printed.
+* A mutation-fuzz test damages every field of a valid manifest and checks that no reader ends in
+  a traceback (it finds all the crashes fixed in 0.3.2 when run against 0.3.1).
+* `capture --tolerance OUTPUT 'rtol=X atol=Y'` gives one numeric output its own tolerance (the other
+  numeric outputs keep `--rtol`/`--atol`). `update` now keeps per-output tolerances instead of
+  refusing manifests that have them.
+* `sciproof calibrate MANIFEST --runs N` runs the recorded command several times and reports how much
+  each output varies: exact outputs must be identical, numeric outputs are measured against the
+  recorded tolerance and a `--tolerance` is suggested. It asks for the same confirmation as
+  `verify --rerun` and puts the outputs back afterwards.
+* `export --format latex --value NAME OUTPUT LOCATION` writes values of the declared outputs as LaTeX
+  macros, so the numbers of a paper come from the recorded outputs. Nothing is written unless the
+  integrity verification passes.
 
-* A shell-pipeline tutorial for capturing and verifying non-Python experiments.
+## [0.3.2] - 2026-10-23
+
+### Fixed
+
+* `update` keeps the log limit of the manifest it replaces: a capture made with
+  `--max-log-bytes 0` no longer gets its stdout/stderr text back after an update (#87).
+* On Windows, a command given by its bare name can be a `.cmd` or `.bat` tool on `PATH` (`npm`,
+  `mvn`, your own `tool.cmd`), as in a terminal. The manifest still records the name as typed (#102).
+* `verify --save-json` and `export -o` report an unwritable path as `error: cannot write ...` with
+  exit status 3 instead of a traceback with exit status 1 (which means verification failed).
+  `verify --save-json` now writes the file after the verdict is printed (#73).
+* Integers too large for a float no longer end in a traceback: the `~=` claim operator compares
+  them exactly, and a number that no float can carry in a validated manifest field is reported as
+  an invalid manifest (#88).
+* A manifest whose `environment.hardware` has no `cpu_count` is rejected at validation instead of
+  passing `verify` and crashing `inspect` and `diff` (#89).
+* `created_at` must be an ISO 8601 timestamp with a timezone offset; any other value is rejected at
+  validation instead of crashing `verify --policy` (`max_age_days`) or `export --format
+  openlineage`. An OpenLineage export whose start time falls out of range is a clean usage error
+  instead of an `OverflowError` (#90).
+* `capture_experiment(base=...)` accepts a string or any `os.PathLike`, like the rest of the Python
+  API (#103).
+* Policy files with a leading UTF-8 BOM are accepted; the original file bytes remain covered by
+  the policy SHA-256 digest (#74).
+
+### Added
 
 * Numeric comparison (`--output-numeric`) supports tab-separated values (`.tsv`), compared with
   the declared tolerance like `.csv`.
-* Policy files with a leading UTF-8 BOM are accepted; the original file bytes remain covered by
-  the policy SHA-256 digest.
-* `verify --save-json` and `export -o` report an unwritable path as `error: cannot write ...` with
-  exit status 3 instead of a traceback with exit status 1 (which means verification failed).
-  `verify --save-json` now writes the file after the verdict is printed.
-* `created_at` must be an ISO 8601 timestamp with a timezone offset; a manifest with any other
-  value is rejected at validation instead of crashing `verify --policy` (max_age_days) or
-  `export --format openlineage` with a traceback. An OpenLineage export whose start time falls
-  out of range is a clean usage error instead of an `OverflowError`.
+* Policies can require a note (`manifest.require_note`) or a hardware record
+  (`manifest.require_hardware`); missing records fail these checks.
+* A shell-pipeline tutorial for capturing and verifying non-Python experiments.
 
 ## [0.3.1] - 2026-10-21
 

@@ -23,7 +23,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sciproof.capture import DEFAULT_ATOL, DEFAULT_RTOL, CaptureResult, capture
+from sciproof.capture import (
+    DEFAULT_ATOL,
+    DEFAULT_MAX_LOG_BYTES,
+    DEFAULT_RTOL,
+    CaptureResult,
+    capture,
+)
 from sciproof.claims import claim_expression
 from sciproof.diffmanifests import DiffReport, diff_manifests
 from sciproof.errors import ConfirmationRequired, UsageError
@@ -55,19 +61,40 @@ class Declarations:
     claims: list[tuple[str, str]]
     note: str | None
     record_hardware: bool
+    max_log_bytes: int = DEFAULT_MAX_LOG_BYTES
+    #: outputs whose tolerance differs from ``rtol``/``atol`` (the most common one)
+    tolerances: dict[str, dict[str, float]] = field(default_factory=dict)
+
+
+def log_limit_of(manifest: dict[str, Any]) -> int:
+    """The ``--max-log-bytes`` the capture used, read back from the recorded streams.
+
+    A stream that was cut shows the limit directly: the text that was kept is exactly that long
+    (a multi-byte character cut in half is stored as U+FFFD, so this is exact for ASCII output and
+    a close estimate otherwise). If nothing was cut the limit was at least as large as the longest
+    stream, so the default or that size is enough to give the same result.
+    """
+    streams = [manifest["execution"]["stdout"], manifest["execution"]["stderr"]]
+    cut = [len(s["text"].encode("utf-8")) for s in streams if s["truncated"]]
+    if cut:
+        return max(cut)
+    return max([DEFAULT_MAX_LOG_BYTES, *(s["size"] for s in streams)])
 
 
 def declarations_of(manifest: dict[str, Any]) -> Declarations:
-    """Read the capture arguments back from a manifest. Raises ``UsageError`` if they differ per
-    output in a way ``capture`` cannot express (it takes one tolerance for all numeric outputs)."""
+    """Read the capture arguments back from a manifest.
+
+    The most common tolerance of the numeric outputs becomes ``rtol``/``atol``; an output with a
+    different one is listed in ``tolerances``, which is what ``--tolerance`` records.
+    """
     numeric = [o for o in manifest["outputs"] if o["compare"]["mode"] == "numeric"]
-    tolerances = {(o["compare"]["rtol"], o["compare"]["atol"]) for o in numeric}
-    if len(tolerances) > 1:
-        raise UsageError(
-            "the numeric outputs of this manifest have different tolerances, which `capture` "
-            "cannot express; capture it again by hand"
-        )
-    rtol, atol = next(iter(tolerances)) if tolerances else (None, None)
+    pairs = [(o["compare"]["rtol"], o["compare"]["atol"]) for o in numeric]
+    rtol, atol = max(pairs, key=pairs.count) if pairs else (None, None)
+    different = {
+        o["path"]: {"rtol": o["compare"]["rtol"], "atol": o["compare"]["atol"]}
+        for o in numeric
+        if (o["compare"]["rtol"], o["compare"]["atol"]) != (rtol, atol)
+    }
     return Declarations(
         name=manifest["name"],
         argv=list(manifest["command"]["argv"]),
@@ -79,6 +106,8 @@ def declarations_of(manifest: dict[str, Any]) -> Declarations:
         claims=[(c["output"], claim_expression(c)) for c in manifest.get("claims") or []],
         note=manifest.get("note"),
         record_hardware=bool(manifest["environment"].get("hardware")),
+        max_log_bytes=log_limit_of(manifest),
+        tolerances=different,
     )
 
 
@@ -178,7 +207,9 @@ def update_baseline(
                 numeric_outputs=declarations.numeric_outputs,
                 rtol=declarations.rtol,
                 atol=declarations.atol,
+                tolerances=declarations.tolerances,
                 timeout=timeout,
+                max_log_bytes=declarations.max_log_bytes,
                 force=True,
                 claims=declarations.claims,
                 note=note if note is not None else declarations.note,

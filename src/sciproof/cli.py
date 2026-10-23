@@ -15,12 +15,15 @@ import sys
 from pathlib import Path
 
 from sciproof import __version__
+from sciproof.badge import render_badge
+from sciproof.calibrate import calibrate
 from sciproof.capture import DEFAULT_ATOL, DEFAULT_MAX_LOG_BYTES, DEFAULT_RTOL, capture
 from sciproof.diffmanifests import diff_manifests, format_diff_json
 from sciproof.errors import ConfirmationRequired, SciProofError, UsageError
 from sciproof.export import format_in_toto, format_openlineage
 from sciproof.inspect_manifest import inspect_file
 from sciproof.junit import list_junit, report_junit
+from sciproof.latex import to_latex
 from sciproof.ledger import (
     format_json,
     format_markdown,
@@ -30,6 +33,7 @@ from sciproof.ledger import (
 )
 from sciproof.manifest import load_manifest
 from sciproof.policy import POLICY_VERSION, load_policy
+from sciproof.record import record
 from sciproof.signing import sign_manifest
 from sciproof.suggest import suggest_inputs
 from sciproof.textutil import safe_text
@@ -110,6 +114,16 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_ATOL,
         help=f"absolute tolerance for numeric outputs (default {DEFAULT_ATOL})",
+    )
+    cap.add_argument(
+        "--tolerance",
+        nargs=2,
+        action="append",
+        default=[],
+        metavar=("OUTPUT", "SETTINGS"),
+        help="a tolerance for one --output-numeric file instead of --rtol/--atol, for example "
+        "--tolerance out/loss.csv 'rtol=1e-3 atol=1e-6' (either setting may be left out); "
+        "repeatable",
     )
     cap.add_argument(
         "--timeout",
@@ -254,6 +268,55 @@ def _build_parser() -> argparse.ArgumentParser:
     sig.add_argument("manifest", type=Path)
     sig.add_argument("--key", type=Path, required=True, metavar="KEY", help="private key file")
 
+    bad = sub.add_parser(
+        "badge",
+        help="verify a manifest and write a static SVG badge with the result",
+        description=(
+            "Verify MANIFEST (integrity only, or with --rerun) and write an SVG badge with the "
+            "verdict, whether the command was re-executed, and the date. The exit status is the "
+            "verdict's, like 'verify', and the badge is written whatever the verdict is. Run it "
+            "in the CI job that verifies; a badge written by hand proves nothing."
+        ),
+    )
+    bad.add_argument("manifest", type=Path)
+    bad.add_argument(
+        "-o", "--output", type=Path, default=Path("sciproof-badge.svg"), metavar="FILE"
+    )
+    bad.add_argument("--rerun", action="store_true", help="EXECUTE the recorded command again")
+    bad.add_argument("--yes", action="store_true", help="do not ask for confirmation (--rerun)")
+    bad.add_argument("--clean-env", action="store_true", help="with --rerun: minimal environment")
+    bad.add_argument("--timeout", type=float, default=3600.0, metavar="SECONDS")
+    rec = sub.add_parser(
+        "record",
+        help="capture an experiment without declaring files: inputs and outputs are detected",
+        description=(
+            "Run COMMAND, find the files it read (inputs, Python commands only) and the files it "
+            "created or changed (outputs), run it again to see which outputs are stable, then "
+            "capture it with what was found and print the equivalent 'capture' command. The "
+            "command runs three times (twice with --fast). See docs/RECORD.md."
+        ),
+    )
+    rec.add_argument("--name", required=True, help="experiment name (also names the manifest)")
+    rec.add_argument(
+        "--input", action="append", default=[], metavar="PATH", help="an input to add by hand"
+    )
+    rec.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="a file or directory that is neither input nor output; repeatable",
+    )
+    rec.add_argument(
+        "--fast", action="store_true", help="skip the second run (outputs are not checked)"
+    )
+    rec.add_argument("--timeout", type=float, default=None, metavar="SECONDS", help="per run")
+    rec.add_argument("--max-log-bytes", type=int, default=DEFAULT_MAX_LOG_BYTES)
+    rec.add_argument("--note", metavar="TEXT", help="free text stored in the manifest")
+    rec.add_argument("--record-hardware", action="store_true")
+    rec.add_argument("--force", action="store_true", help="overwrite an existing manifest")
+    rec.add_argument("cmd", nargs=argparse.REMAINDER, metavar="-- COMMAND [ARGS...]")
+
     upd = sub.add_parser(
         "update",
         help="capture the recorded experiment again (re-baseline) and show what changed",
@@ -269,6 +332,22 @@ def _build_parser() -> argparse.ArgumentParser:
     upd.add_argument("--dry-run", action="store_true", help="show what would happen; run nothing")
     upd.add_argument("--note", metavar="TEXT", help="replace the note of the manifest")
     upd.add_argument("--timeout", type=float, default=None, metavar="SECONDS")
+
+    cal = sub.add_parser(
+        "calibrate",
+        help="run the recorded command several times and measure how much its outputs vary",
+        description=(
+            "Run the command of MANIFEST --runs times and compare the declared outputs of the "
+            "runs with each other and with the recorded baseline: exact outputs must be "
+            "identical, numeric outputs are measured and a tolerance is suggested. This EXECUTES "
+            "the recorded command, like 'verify --rerun', so it asks for confirmation (or needs "
+            "--yes). The outputs are put back afterwards and the manifest is not changed."
+        ),
+    )
+    cal.add_argument("manifest", type=Path)
+    cal.add_argument("--runs", type=int, default=5, metavar="N", help="2 to 50 (default 5)")
+    cal.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    cal.add_argument("--timeout", type=float, default=None, metavar="SECONDS", help="per run")
 
     dif = sub.add_parser(
         "diff",
@@ -310,10 +389,21 @@ def _build_parser() -> argparse.ArgumentParser:
     exp.add_argument("manifest", type=Path)
     exp.add_argument(
         "--format",
-        choices=("in-toto", "openlineage"),
+        choices=("in-toto", "openlineage", "latex"),
         default="in-toto",
         help="in-toto: an unsigned Statement v1 with hashes; openlineage: START and "
-        "COMPLETE/FAIL run events with the inputs and outputs (no hashes, no verdict)",
+        "COMPLETE/FAIL run events with the inputs and outputs (no hashes, no verdict); "
+        "latex: LaTeX macros (\\newcommand) for values of the outputs (needs --value; only written "
+        "if the integrity verification passes)",
+    )
+    exp.add_argument(
+        "--value",
+        nargs=3,
+        action="append",
+        default=[],
+        metavar=("NAME", "OUTPUT", "LOCATION"),
+        help="with --format latex: a macro NAME for the value at LOCATION of the declared "
+        "OUTPUT, for example --value accuracy out/metrics.json '$.accuracy'; repeatable",
     )
     exp.add_argument(
         "-o", "--output", type=Path, metavar="FILE", help="write here (default: stdout)"
@@ -341,6 +431,31 @@ def _confirm(prompt: str) -> bool:
     return answer.strip().lower() == "yes"
 
 
+def _parse_tolerances(pairs: list[list[str]]) -> dict[str, dict[str, float]]:
+    """``--tolerance OUTPUT 'rtol=1e-3 atol=1e-6'`` pairs as ``{output: {setting: value}}``."""
+    result: dict[str, dict[str, float]] = {}
+    for output, text in pairs:
+        if output in result:
+            raise UsageError(f"--tolerance given twice for {output!r}")
+        settings: dict[str, float] = {}
+        for item in text.replace(",", " ").split():
+            name, _, number = item.partition("=")
+            if name not in ("rtol", "atol") or not number:
+                raise UsageError(
+                    f"--tolerance {output!r}: expected 'rtol=X', 'atol=Y' or both, got {item!r}"
+                )
+            if name in settings:
+                raise UsageError(f"--tolerance {output!r}: {name} given twice")
+            try:
+                settings[name] = float(number)
+            except ValueError:
+                raise UsageError(f"--tolerance {output!r}: {name} must be a number") from None
+        if not settings:
+            raise UsageError(f"--tolerance {output!r}: no setting given; use 'rtol=X atol=Y'")
+        result[output] = settings
+    return result
+
+
 def _run_capture(args: argparse.Namespace) -> int:
     command = list(args.cmd)
     if command and command[0] == "--":
@@ -358,6 +473,7 @@ def _run_capture(args: argparse.Namespace) -> int:
         numeric_outputs=args.output_numeric,
         rtol=args.rtol,
         atol=args.atol,
+        tolerances=_parse_tolerances(args.tolerance),
         timeout=args.timeout,
         max_log_bytes=args.max_log_bytes,
         force=args.force,
@@ -461,8 +577,13 @@ def _write_user_file(path: Path, text: str) -> None:
 
 
 def _run_export(args: argparse.Namespace) -> int:
-    printer = format_openlineage if args.format == "openlineage" else format_in_toto
-    text = printer(args.manifest)
+    if args.value and args.format != "latex":
+        raise UsageError("--value is only used with --format latex")
+    if args.format == "latex":
+        text = to_latex(args.manifest, [(name, out, loc) for name, out, loc in args.value])
+    else:
+        printer = format_openlineage if args.format == "openlineage" else format_in_toto
+        text = printer(args.manifest)
     if args.output is None:
         print(text, end="")
         return EXIT_OK
@@ -508,6 +629,80 @@ def _run_update(args: argparse.Namespace) -> int:
         print("The command failed; the failure was recorded.", file=sys.stderr)
         return EXIT_FAIL
     return EXIT_OK
+
+
+def _run_badge(args: argparse.Namespace) -> int:
+    report = verify(
+        args.manifest,
+        rerun=args.rerun,
+        assume_yes=args.yes,
+        timeout=args.timeout,
+        confirm=_confirm if args.rerun and not args.yes else None,
+        clean_env=args.clean_env,
+    )
+    _write_user_file(args.output, render_badge(report.status, rerun=report.rerun_executed))
+    print(f"{report.status.value}: wrote {args.output}")
+    return _STATUS_EXIT[report.status]
+
+
+def _run_record(args: argparse.Namespace) -> int:
+    command = list(args.cmd)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        raise SciProofError(
+            "no command given; usage: sciproof record --name NAME [options] -- COMMAND"
+        )
+    result = record(
+        name=args.name,
+        argv=command,
+        base=Path.cwd(),
+        inputs=args.input,
+        exclude=args.exclude,
+        fast=args.fast,
+        timeout=args.timeout,
+        max_log_bytes=args.max_log_bytes,
+        force=args.force,
+        note=args.note,
+        record_hardware=args.record_hardware,
+    )
+    for warning in result.capture.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    print(f"Evidence written to {result.capture.manifest_path.name}")
+    print(f"  inputs found:   {len(result.inputs)}")
+    print(f"  outputs, exact: {len(result.exact)}")
+    print(f"  outputs, numeric: {len(result.numeric)}")
+    for path, settings in sorted(result.tolerances.items()):
+        shown = " ".join(f"{k}={v:g}" for k, v in settings.items())
+        print(f"    {safe_text(path)}: varies between runs, tolerance {shown}")
+    for path, reason in result.excluded:
+        print(f"  NOT declared: {safe_text(path)} ({safe_text(reason, 200)})")
+    for note in result.notes:
+        print(f"  note: {safe_text(note, 300)}")
+    print()
+    print("Equivalent command (commit it, or run it again later):")
+    print(f"  {safe_text(result.command_line, 4000)}")
+    print("Check the list above: only files that Python opened are detected as inputs.")
+    if result.tolerances:
+        print("The tolerances come from two runs; 'sciproof calibrate' measures them with more.")
+    if result.capture.exit_code != 0:
+        return EXIT_FAIL
+    return EXIT_OK
+
+
+def _run_calibrate(args: argparse.Namespace) -> int:
+    report = calibrate(
+        args.manifest,
+        runs=args.runs,
+        assume_yes=args.yes,
+        confirm=_confirm if not args.yes else None,
+        timeout=args.timeout,
+    )
+    if report is None:
+        print("declined; nothing was executed", file=sys.stderr)
+        return EXIT_INCONCLUSIVE
+    print(report.to_text())
+    return EXIT_OK if report.ok else EXIT_FAIL
 
 
 def _run_diff(args: argparse.Namespace) -> int:
@@ -575,6 +770,12 @@ def main(argv: list[str] | None = None) -> int:
             return _run_diff(args)
         if args.command_name == "update":
             return _run_update(args)
+        if args.command_name == "calibrate":
+            return _run_calibrate(args)
+        if args.command_name == "badge":
+            return _run_badge(args)
+        if args.command_name == "record":
+            return _run_record(args)
         if args.command_name == "check-policy":
             return _run_check_policy(args)
         if args.command_name == "list":

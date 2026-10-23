@@ -13,6 +13,11 @@ from sciproof.errors import CaptureError, ConfirmationRequired, UsageError
 from sciproof.update import declarations_of, describe_update, update_baseline
 from sciproof.verify import Status, verify
 
+TWO_FILES = (
+    "import json, os; os.makedirs('out', exist_ok=True); "
+    "[json.dump({'v': 1.0}, open(f'out/{n}.json', 'w')) for n in 'abc']"
+)
+
 CLAIMS = [
     ("out/result.json", "$.value >= 42"),
     ("out/result.json", '$.label == "ok"'),
@@ -52,14 +57,28 @@ def test_declarations_are_read_back_from_a_manifest(project):
     assert [parse_claim(o, e) for o, e in d.claims] == [parse_claim(o, e) for o, e in CLAIMS]
 
 
-def test_different_tolerances_per_output_cannot_be_updated(project):
-    project.capture()
-    data = json.loads(project.manifest.read_text())
-    second = dict(data["outputs"][1])
-    second.update(path="out/other.json", compare={**second["compare"], "rtol": 0.5})
-    data["outputs"].append(second)
-    with pytest.raises(UsageError, match="different tolerances"):
-        declarations_of(data)
+def test_different_tolerances_per_output_are_read_back_and_kept_by_an_update(project):
+    project.capture(
+        argv=[sys.executable, "-c", TWO_FILES],
+        outputs=[],
+        numeric_outputs=["out/a.json", "out/b.json", "out/c.json"],
+        rtol=1e-6,
+        atol=0.0,
+        tolerances={"out/b.json": {"rtol": 0.5}, "out/c.json": {"atol": 1e-3}},
+    )
+    declared = declarations_of(json.loads(project.manifest.read_text()))
+    assert (declared.rtol, declared.atol) == (1e-6, 0.0)  # the most common pair
+    assert declared.tolerances == {
+        "out/b.json": {"rtol": 0.5, "atol": 0.0},
+        "out/c.json": {"rtol": 1e-6, "atol": 1e-3},
+    }
+    update_baseline(project.manifest, assume_yes=True)
+    outputs = {o["path"]: o["compare"] for o in json.loads(project.manifest.read_text())["outputs"]}
+    assert [(outputs[p]["rtol"], outputs[p]["atol"]) for p in sorted(outputs)] == [
+        (1e-6, 0.0),
+        (0.5, 0.0),
+        (1e-6, 1e-3),
+    ]
 
 
 # ---------------------------------------------------------------- the update
@@ -103,6 +122,30 @@ def test_the_new_manifest_keeps_numeric_tolerance_and_hardware(project):
     compare = next(o["compare"] for o in data["outputs"] if o["path"] == "out/result.json")
     assert (compare["rtol"], compare["atol"]) == (1e-6, 1e-9)
     assert "hardware" in data["environment"]
+
+
+@pytest.mark.parametrize("limit", [0, 2])
+def test_the_log_limit_survives_an_update(project, limit):
+    # --max-log-bytes 0 keeps a command's output out of the manifest; an update must not put it back
+    project.capture(max_log_bytes=limit)
+    before = json.loads(project.manifest.read_text())["execution"]["stdout"]
+    assert before["truncated"] and before["text"] == "done"[:limit]
+    update_baseline(project.manifest, assume_yes=True)
+    after = json.loads(project.manifest.read_text())["execution"]["stdout"]
+    assert after["truncated"] and after["text"] == before["text"]
+
+
+def test_an_update_keeps_the_default_when_no_log_was_cut(project):
+    project.capture()
+    data = json.loads(project.manifest.read_text())
+    assert declarations_of(data).max_log_bytes == 64 * 1024
+
+
+def test_a_long_uncut_log_does_not_lower_the_limit(project):
+    project.capture()
+    data = json.loads(project.manifest.read_text())
+    data["execution"]["stdout"]["size"] = 1_000_000  # recorded with a limit above the default
+    assert declarations_of(data).max_log_bytes == 1_000_000
 
 
 def test_the_note_can_be_replaced(project):
