@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 
@@ -236,6 +237,31 @@ def test_a_file_that_became_a_directory(project, tmp_path):
     assert "results" in removed
 
 
+@pytest.mark.parametrize("section", ["inputs", "outputs"])
+def test_a_file_replaced_by_a_directory_is_reported(project, section):
+    artifact = project.root / "artifact"
+    artifact.write_text("before")
+    options = {
+        "argv": [sys.executable, "-c", "pass"],
+        "inputs": [],
+        "outputs": [],
+        "numeric_outputs": [],
+        section: ["artifact"],
+    }
+    first = project.capture(name="a", **options)
+    artifact.unlink()
+    artifact.mkdir()
+    (artifact / "result.txt").write_text("after")
+    second = project.capture(name="b", **options)
+
+    report = diff_manifests(first.manifest_path, second.manifest_path)
+    (change,) = _by_section(report, section)
+    assert change.subject == "artifact"
+    assert change.kind == "changed"
+    assert "was a file" in change.message and "is now a directory" in change.message
+    assert not report.identical
+
+
 def test_directory_trees_are_compared_by_file(project):
     (project.root / "inputs").mkdir()
     (project.root / "inputs" / "x.csv").write_text("1")
@@ -266,6 +292,27 @@ def test_a_missing_snapshot_is_said_too(project, pair):
     (project.root / "b.sciproof.d" / "1-result.json").unlink()
     out = next(c for c in diff_manifests(old, new).changes if c.subject == "out/result.json")
     assert "is missing" in out.message
+
+
+def test_corrupted_numeric_snapshot_reports_numeric_not_comparable(project, pair):
+    old, new = pair(between=lambda: (project.root / "data.json").write_text('{"x": 10}'))
+    snapshot = project.root / "a.sciproof.d" / "1-result.json"
+    snapshot.write_text("not-a-valid-json-or-csv-{{{")
+    # Corrupting the snapshot alone would trip the integrity ("was modified")
+    # branch before parsing, so re-record the corrupted snapshot's digest in
+    # the old manifest: this is the snapshot load_numeric actually fails on.
+    digest = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+
+    def _rerecord(manifest):
+        for item in manifest["outputs"]:
+            if item["path"] == "out/result.json":
+                item["compare"]["snapshot"]["sha256"] = digest
+
+    _edit(old, _rerecord)
+    out = next(c for c in diff_manifests(old, new).changes if c.subject == "out/result.json")
+    assert "numeric comparison not possible" in out.message
+    assert "is not valid JSON" in out.message
+    assert out.evidence["numeric"]["comparable"] is False
 
 
 # ---------------------------------------------------------------- output formats
@@ -314,6 +361,20 @@ def test_long_sections_are_cut_in_text_but_complete_in_json(project, pair):
     report = diff_manifests(old, new)
     assert "... and" in report.to_text()
     assert len(report.to_dict()["changes"]) >= len(packages)
+
+
+def test_markdown_caps_long_sections_and_reports_the_omitted_count(project, pair):
+    old, new = pair()
+    packages = [{"name": f"pkg{i:03}", "version": "1"} for i in range(MAX_LINES_PER_SECTION + 5)]
+    _edit(old, lambda d: d.update(dependencies=[]))
+    _edit(new, lambda d: d.update(dependencies=packages))
+
+    report = diff_manifests(old, new)
+    text = report.to_markdown()
+    assert f"package pkg{MAX_LINES_PER_SECTION - 1:03}" in text
+    assert f"package pkg{MAX_LINES_PER_SECTION:03}" not in text
+    assert "... and 5 more" in text
+    assert len(_by_section(report, "environment")) == len(packages)
 
 
 # ---------------------------------------------------------------- command line and API
