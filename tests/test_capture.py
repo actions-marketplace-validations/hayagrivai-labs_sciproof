@@ -69,6 +69,23 @@ def test_failed_command_that_produced_no_output_records_it_as_absent(project):
     assert load_manifest(project.manifest)["outputs"][0]["present"] is False
 
 
+def test_failed_command_with_numeric_outputs_leaves_no_evidence(project):
+    # Adaptation from the issue sketch: on current main the failure is
+    # reported as "the command failed and the numeric output ... does not
+    # exist" (capture.py), not "command failed with exit code" — the error
+    # does not name the exit code. The test matches the actual message;
+    # changing the message would be a behaviour change outside this issue.
+    with pytest.raises(CaptureError, match="the command failed and the numeric output"):
+        project.capture(
+            name="test-fail-numeric",
+            argv=[sys.executable, "-c", "import sys; sys.exit(2)"],
+            numeric_outputs=["result.json"],
+            outputs=[],
+        )
+    assert not project.manifest.exists()
+    assert not (project.root / "test-fail-numeric.sciproof.d").exists()
+
+
 def test_successful_command_must_produce_declared_outputs(project):
     with pytest.raises(CaptureError, match="does not exist"):
         project.capture(argv=[sys.executable, "-c", "pass"], outputs=["out/never.txt"])
@@ -126,6 +143,14 @@ def test_timeout_writes_no_evidence(project):
 def test_missing_input_is_an_error(project):
     with pytest.raises(CaptureError, match="input file not found"):
         project.capture(inputs=["data.json", "does-not-exist.csv"])
+
+
+@pytest.mark.parametrize("field", ["inputs", "outputs"])
+def test_path_outside_workspace_is_rejected(project, field):
+    with pytest.raises(CaptureError, match="outside"):
+        project.capture(argv=[sys.executable, "-c", "pass"], **{field: ["../outside.txt"]})
+    assert not project.manifest.exists()
+    assert project.runs() == 0  # the path is rejected before the command runs
 
 
 def test_a_directory_as_input_is_recorded_as_a_tree(project):
@@ -327,3 +352,17 @@ def test_unwritable_manifest_destination_raises_capture_error(project):
     (project.root / "unwritable.sciproof.json").mkdir()
     with pytest.raises(CaptureError, match="cannot write"):
         project.capture(name="unwritable", force=True)
+
+
+def test_numeric_output_cannot_be_a_directory(project):
+    # Issue sketch's match string ("numeric comparison cannot handle a directory")
+    # does not appear in the actual message on current main (see PR body);
+    # matched against the real message instead, without touching src/.
+    with pytest.raises(CaptureError, match="is a directory; --output-numeric compares single"):
+        project.capture(
+            name="test-run",
+            argv=[sys.executable, "-c", "import os; os.makedirs('out_dir', exist_ok=True)"],
+            numeric_outputs=["out_dir"],
+            outputs=[],
+        )
+    assert not project.manifest.exists()
