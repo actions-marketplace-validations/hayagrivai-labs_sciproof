@@ -133,6 +133,54 @@ def test_too_many_files_are_refused(tmp_path):
     assert len(scan_tree(tmp_path, limit=3)) == 3
 
 
+def test_unreadable_directory_raises_tree_error(tmp_path, monkeypatch):
+    def raise_permission_error(*args, **kwargs):
+        raise PermissionError("access denied")
+
+    monkeypatch.setattr(os, "scandir", raise_permission_error)
+
+    with pytest.raises(TreeError, match="cannot read"):
+        scan_tree(tmp_path)
+
+
+def test_unreadable_file_raises_tree_error(tmp_path, monkeypatch):
+    (tmp_path / "file.txt").write_text("content")
+
+    def raise_os_error(*args, **kwargs):
+        raise OSError("disk read error")
+
+    monkeypatch.setattr("sciproof.treehash.sha256_file", raise_os_error)
+
+    with pytest.raises(TreeError, match="cannot read"):
+        scan_tree(tmp_path)
+
+
+def test_non_regular_files_and_directories_raise_tree_error(tmp_path, monkeypatch):
+    class SpecialEntry:
+        name = "special"
+
+        def is_symlink(self):
+            return False
+
+        def is_dir(self, *, follow_symlinks=True):
+            return False
+
+        def is_file(self, *, follow_symlinks=True):
+            return False
+
+    class FakeScandir:
+        def __enter__(self):
+            return iter([SpecialEntry()])
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(os, "scandir", lambda *args, **kwargs: FakeScandir())
+
+    with pytest.raises(TreeError, match="not a regular file or directory"):
+        scan_tree(tmp_path)
+
+
 def test_symbolic_links_inside_a_tree_are_refused(tmp_path):
     if not _can_symlink(tmp_path):
         pytest.skip("symbolic links are not available here")
@@ -560,3 +608,20 @@ def test_capture_reports_a_non_portable_file_name_instead_of_failing_late(dirs):
     with pytest.raises(CaptureError, match="cannot record 'aux.txt'.*reserved Windows device"):
         dirs.dirs_capture(argv=[sys.executable, "-c", code])
     assert not dirs.dirs_manifest.exists()
+
+
+def test_scan_tree_parallel_execution_many_files(tmp_path):
+    """When directory has >= 16 files, scan_tree runs threaded hashing."""
+    root = tmp_path / "dataset"
+    root.mkdir()
+    for i in range(25):
+        (root / f"file_{i:02d}.txt").write_text(f"content_{i}")
+
+    entries = scan_tree(root)
+    assert len(entries) == 25
+    # Verify deterministic alphabetical sorting
+    assert [e.path for e in entries] == [f"file_{i:02d}.txt" for i in range(25)]
+    # Verify digests are computed accurately
+    for i, e in enumerate(entries):
+        assert e.size == len(f"content_{i}")
+        assert len(e.sha256) == 64

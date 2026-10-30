@@ -99,7 +99,7 @@ your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/hayagrivai-labs/sciproof
-    rev: v0.4.1
+    rev: v0.5.0
     hooks:
       - id: sciproof-check
       # Optional: validate the conventional sciproof.policy.toml as well.
@@ -157,6 +157,27 @@ unchanged, so the step still fails on `FAIL` or `INCONCLUSIVE` and the summary i
 To see what changed between the committed baseline and a fresh capture, use
 `sciproof diff baseline.sciproof.json candidate.sciproof.json --format markdown`.
 
+### Quiet mode for concise CI logs
+
+Use `-q` or `--quiet` when you want a concise verification result without decorative headers.
+The final verdict is printed to stdout, while failure diagnostics are sent to stderr.
+
+Add this step to a GitHub Actions workflow:
+
+```yaml
+      - name: Verify the evidence (quiet mode)
+        run: sciproof verify --quiet baseline.sciproof.json
+```
+
+For a local check, use:
+
+```bash
+sciproof verify --quiet baseline.sciproof.json
+```
+
+Quiet mode changes the output, not the verification result or failure status. See
+[Exit codes](EXIT_CODES.md) for the meaning of each status code.
+
 ## The GitHub Action
 
 The repository is also a composite action that does the above for you: it installs SciProof (or uses
@@ -165,7 +186,7 @@ the step unless the result is `PASS`.
 
 ```yaml
       - uses: actions/checkout@v7
-      - uses: hayagrivai-labs/sciproof@v0.4.1
+      - uses: hayagrivai-labs/sciproof@v0.5.0
         with:
           manifest: baseline.sciproof.json
           policy: sciproof.policy.toml     # optional
@@ -180,7 +201,7 @@ the step unless the result is `PASS`.
 | `policy` | | a [policy file](POLICY.md) |
 | `allowed-signers` | | an OpenSSH allowed-signers file ([signing](SIGNING.md)) |
 | `working-directory` | `.` | the directory the paths are relative to |
-| `version` | latest | the SciProof version to install, for example `0.4.1` (the action needs 0.3.0 or later and fails with a clear message on an older one) |
+| `version` | latest | the SciProof version to install, for example `0.5.0` (the action needs 0.3.0 or later and fails with a clear message on an older one) |
 | `install` | `true` | set to `false` if the job already installed SciProof |
 | `python-version` | `3.12` | used when `install` is true |
 
