@@ -19,7 +19,7 @@ jobs:
     name: Action with the SciProof of this commit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -95,7 +95,7 @@ jobs:
     name: A tampered output makes the step fail
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -122,7 +122,7 @@ jobs:
     name: Action installs a pinned release from PyPI and refuses one that is too old
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -150,7 +150,7 @@ jobs:
     name: Action with the latest release on PyPI (skipped until a release has --save-json)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
