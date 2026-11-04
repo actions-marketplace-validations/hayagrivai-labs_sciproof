@@ -17,7 +17,7 @@ jobs:
     name: Build JOSS Paper PDF
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Build Draft PDF using Inara
         uses: openjournals/openjournals-draft-action@master
@@ -26,7 +26,7 @@ jobs:
           paper-path: paper/paper.md
 
       - name: Upload PDF Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: paper-pdf
           path: paper/paper.pdf
