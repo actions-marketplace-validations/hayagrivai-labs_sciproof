@@ -11,6 +11,15 @@ from sciproof.errors import UnsafePathError
 from sciproof.paths import expand_glob, has_glob_magic
 
 
+def _require_symlinks(tmp_path) -> None:
+    try:
+        probe = tmp_path / "probe_symlink"
+        probe.symlink_to(tmp_path)
+        probe.unlink()
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are not available here")
+
+
 def test_glob_magic_detection():
     assert has_glob_magic("data/*.csv")
     assert has_glob_magic("data/split_?.json")
@@ -25,6 +34,43 @@ def test_expand_glob_matches(tmp_path):
 
     matches = expand_glob(tmp_path, "*.txt")
     assert matches == ["a.txt", "b.txt"]
+
+
+def test_expand_glob_drops_directories(tmp_path):
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "a.txt").write_text("a")
+    (tmp_path / "out" / "sub").mkdir()
+    (tmp_path / "out" / "sub" / "b.txt").write_text("b")
+
+    assert expand_glob(tmp_path, "out/**/*") == ["out/a.txt", "out/sub/b.txt"]
+
+
+def test_expand_glob_records_file_symlink_by_its_own_path(tmp_path):
+    _require_symlinks(tmp_path)
+    (tmp_path / "real.txt").write_text("real")
+    (tmp_path / "link.txt").symlink_to("real.txt")
+
+    assert expand_glob(tmp_path, "*.txt") == ["link.txt", "real.txt"]
+
+
+def test_expand_glob_does_not_follow_directory_symlinks(tmp_path):
+    _require_symlinks(tmp_path)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "inner.txt").write_text("inner")
+    (tmp_path / "linkdir").symlink_to("sub", target_is_directory=True)
+
+    assert expand_glob(tmp_path, "*") == []
+    assert expand_glob(tmp_path, "linkdir/*.txt") == []
+
+
+def test_expand_glob_drops_outside_and_broken_symlinks(tmp_path):
+    _require_symlinks(tmp_path)
+    outside = tmp_path.parent / "outside.txt"
+    outside.write_text("outside")
+    (tmp_path / "link_out.txt").symlink_to(outside)
+    (tmp_path / "link_broken.txt").symlink_to("missing.txt")
+
+    assert expand_glob(tmp_path, "*.txt") == []
 
 
 def test_capture_with_input_glob(project):
@@ -56,6 +102,48 @@ def test_capture_with_unmatched_input_glob_fails(project):
             outputs=[],
             numeric_outputs=[],
         )
+
+
+def test_capture_with_unmatched_output_glob_fails_and_writes_no_manifest(project):
+    with pytest.raises(CaptureError, match="no files matched output glob"):
+        capture(
+            name="glob_out_fail",
+            argv=[sys.executable, "-c", "import sys; sys.exit(0)"],
+            base=project.root,
+            inputs=[],
+            outputs=["out_glob/*.txt"],
+            numeric_outputs=[],
+        )
+    assert not (project.root / "glob_out_fail.sciproof.json").exists()
+
+
+def test_capture_with_unmatched_output_glob_fails_even_when_command_fails(project):
+    # A failed command still records explicit missing outputs, but an output
+    # glob that matched nothing has no file to record, so it must not be
+    # silently dropped into a manifest with no declared outputs.
+    with pytest.raises(CaptureError, match="no files matched output glob"):
+        capture(
+            name="glob_out_fail_cmd",
+            argv=[sys.executable, "-c", "import sys; sys.exit(1)"],
+            base=project.root,
+            inputs=[],
+            outputs=["out_glob/*.txt"],
+            numeric_outputs=[],
+        )
+    assert not (project.root / "glob_out_fail_cmd.sciproof.json").exists()
+
+
+def test_capture_with_unmatched_numeric_output_glob_fails(project):
+    with pytest.raises(CaptureError, match="no files matched output-numeric glob"):
+        capture(
+            name="glob_num_fail",
+            argv=[sys.executable, "-c", "import sys; sys.exit(0)"],
+            base=project.root,
+            inputs=[],
+            outputs=[],
+            numeric_outputs=["out_num/*.json"],
+        )
+    assert not (project.root / "glob_num_fail.sciproof.json").exists()
 
 
 def test_capture_with_output_glob(project):
