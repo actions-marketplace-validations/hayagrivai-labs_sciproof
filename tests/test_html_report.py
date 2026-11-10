@@ -19,12 +19,36 @@ def test_html_report_pass(project, capsys):
     assert "exp" in html_content
     assert "out/exact.txt" in html_content
 
+    # Notes section and scope statement
+    assert "<h2>Notes</h2>" in html_content
+    assert "recorded command was NOT executed" in html_content
+
+    # Not checked section and items
+    assert 'id="not-checked"' in html_content
+    assert "<h2>Not checked</h2>" in html_content
+    for item in report.not_checked:
+        assert item in html_content
+
     # CLI export
     code = cli.main(["verify", str(project.manifest), "--format", "html"])
     assert code == cli.EXIT_OK
     cli_out = capsys.readouterr().out
     assert "<!DOCTYPE html>" in cli_out
     assert "badge-pass" in cli_out
+    assert "<h2>Not checked</h2>" in cli_out
+
+
+def test_html_report_rerun(project):
+    project.capture()
+    report = verify(project.manifest, rerun=True, assume_yes=True)
+    html_content = report_html(report)
+
+    assert 'id="not-checked"' in html_content
+    assert "<h2>Not checked</h2>" in html_content
+    assert "stdout and stderr of the rerun" in html_content
+    assert "environment reconstruction" in html_content
+    assert "other machines or platforms" in html_content
+    assert "reproducibility: the recorded command was not executed" not in html_content
 
 
 def test_html_report_fail(project, capsys):
@@ -60,8 +84,63 @@ def test_html_report_escapes_untrusted_input():
         name="<b>exp</b> & co",
         rerun_requested=False,
         checks=[Check(Status.FAIL, "<script>alert(1)</script>", 'a & "quotes"')],
+        warnings=['<img src="x" onerror="alert(2)">'],
     )
+    report.info.append('<svg onload="alert(3)">malicious note</svg>')
     html_content = report_html(report)
     assert "&lt;script&gt;" in html_content
     assert "<script>alert" not in html_content
     assert "&amp;" in html_content
+    assert "&lt;img" in html_content
+    assert '<img src="x"' not in html_content
+    assert "&lt;svg" in html_content
+    assert '<svg onload="' not in html_content
+
+
+def test_html_report_visual_tolerance_meters():
+    evidence = {
+        "kind": "rerun_output_numeric",
+        "path": "out/metrics.json",
+        "rtol": 1e-4,
+        "atol": 1e-6,
+        "difference_details": [
+            {
+                "location": "accuracy",
+                "recorded": 0.95,
+                "found": 0.94999,
+                "abs_diff": 0.00001,
+                "rel_diff": 0.0000105,
+                "allowed": 0.000095,
+            },
+            {
+                "location": "loss",
+                "recorded": 0.05,
+                "found": 0.052,
+                "abs_diff": 0.002,
+                "rel_diff": 0.04,
+                "allowed": 0.000005,
+            },
+        ],
+    }
+    report = Report(
+        name="numeric-exp",
+        rerun_requested=True,
+        checks=[
+            Check(
+                Status.FAIL,
+                "output out/metrics.json",
+                "values differ outside tolerance",
+                evidence=evidence,
+            )
+        ],
+    )
+    html_content = report_html(report)
+
+    assert "Numeric Comparison: out/metrics.json" in html_content
+    assert "Tolerance Meter" in html_content
+    assert "gauge-fill" in html_content
+    assert "gauge-fill exceeded" in html_content
+    assert "slider-group" in html_content
+    assert "rtol-slider-0" in html_content
+    assert "atol-slider-0" in html_content
+    assert "updateTolerance(0)" in html_content

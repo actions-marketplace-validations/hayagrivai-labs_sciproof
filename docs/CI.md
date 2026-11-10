@@ -157,6 +157,44 @@ unchanged, so the step still fails on `FAIL` or `INCONCLUSIVE` and the summary i
 To see what changed between the committed baseline and a fresh capture, use
 `sciproof diff baseline.sciproof.json candidate.sciproof.json --format markdown`.
 
+
+### Uploading SARIF results to GitHub Code Scanning
+
+To display failed checks and warnings as annotations on PR files and alerts in GitHub Code Scanning:
+
+```yaml
+      - name: Verify experiment (SARIF)
+        if: always()
+        run: sciproof verify baseline.sciproof.json --format sarif -o sciproof.sarif
+
+      - name: Upload SARIF report
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: sciproof.sarif
+          category: sciproof
+```
+
+See [docs/REPORT.md](REPORT.md#sarif-210-report) for rule definitions (`SP001`-`SP003`).
+
+### Publishing HTML reports as artifacts
+
+To generate and preserve an interactive HTML report with visual tolerance meters:
+
+```yaml
+      - name: Generate HTML verification report
+        if: always()
+        run: sciproof verify baseline.sciproof.json --format html -o sciproof-report.html
+
+      - name: Upload HTML report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sciproof-verification-report
+          path: sciproof-report.html
+```
+
+
 ### Quiet mode for concise CI logs
 
 Use `-q` or `--quiet` when you want a concise verification result without decorative headers.
@@ -202,8 +240,9 @@ the step unless the result is `PASS`.
 | `allowed-signers` | | an OpenSSH allowed-signers file ([signing](SIGNING.md)) |
 | `working-directory` | `.` | the directory the paths are relative to |
 | `version` | latest | the SciProof version to install, for example `0.6.0` (the action needs 0.3.0 or later and fails with a clear message on an older one) |
+| `extras` | | optional extras to install with SciProof, for example `numpy` to compare `.npy`/`.npz` outputs |
 | `install` | `true` | set to `false` if the job already installed SciProof |
-| `python-version` | `3.12` | used when `install` is true |
+| `python-version` | | Python version to set up when `install` is true; empty uses the job's current Python without switching interpreters |
 
 Outputs: `result` (`PASS`, `FAIL`, `INCONCLUSIVE`, or `ERROR` if SciProof could not run) and `report`
 (the path of the JSON report). Inputs reach the shell only through environment variables, never by
@@ -213,6 +252,17 @@ protected branch, never for ones that come from a pull request, and pin the acti
 commit. The repository's own CI runs the action on a small project (passing, failing policy,
 tampered output, and installed from PyPI).
 
+### Re-running experiments and custom environments (`rerun: true`)
+
+When `rerun: true` executes your command, it uses the `python` interpreter currently on `PATH`.
+If your experiment relies on specific packages (e.g. PyTorch, pandas) or a specific Python version (e.g. 3.11):
+
+* **Recommended:** Set up your Python environment and packages beforehand (e.g. via `actions/setup-python`),
+  install SciProof into it (`pip install sciproof` or `pip install 'sciproof[numpy]'`), and set `install: "false"`.
+  This guarantees the rerun uses your exact environment and dependencies without the action switching interpreters.
+* Alternatively, leave `install: "true"` with the default empty `python-version`: the action will install SciProof
+  (and any `extras`, such as `extras: "numpy"`) into the active interpreter without calling `setup-python`.
+
 ## JUnit output and policies in CI
 
 `sciproof verify --format junit` prints the checks as JUnit XML (a `FAIL` is a failure; an
@@ -221,5 +271,38 @@ tampered output, and installed from PyPI).
 `--save-json report.json` to keep the JSON report as an artifact as well. A [policy](POLICY.md) turns
 the team's requirements ("signed, clean tree, evidence not older than 30 days") into checks that fail
 the build with a reason.
+
+## Pytest plugin in CI
+
+SciProof includes a pytest plugin (registered under the `pytest11` entry point as `sciproof`).
+Run pytest with `--sciproof` to discover and verify all `*.sciproof.json` manifests in your test tree:
+
+```bash
+pytest --sciproof
+```
+
+When re-executing recorded commands during tests (`--sciproof-rerun`):
+
+> [!WARNING]
+> `--sciproof-rerun` **executes the recorded commands** without interactive confirmation.
+> By default, verification inherits pytest's environment unless `--sciproof-clean-env` is passed.
+> In CI, always use `--sciproof-clean-env` to avoid credential exposure, and only run against trusted
+> manifests from your team.
+
+```bash
+pytest --sciproof --sciproof-rerun --sciproof-clean-env
+```
+
+Available flags (and their `pytest.ini` / `pyproject.toml` equivalents):
+
+| Flag | INI option | Description |
+| --- | --- | --- |
+| `--sciproof` | `sciproof = true` | Discover and verify `*.sciproof.json` manifests as pytest test items |
+| `--sciproof-rerun` | `sciproof_rerun = true` | Re-execute recorded manifest commands |
+| `--sciproof-clean-env` | `sciproof_clean_env = true` | Run rerun command with a minimal clean environment |
+| `--sciproof-pass-env NAME` | `sciproof_pass_env = NAME ...` | Environment variable to pass through with clean env (repeatable) |
+| `--sciproof-timeout SEC` | `sciproof_timeout = SEC` | Rerun timeout in seconds |
+| `--sciproof-policy FILE` | `sciproof_policy = FILE` | Policy file (TOML) to check |
+| `--sciproof-allowed-signers FILE` | `sciproof_allowed_signers = FILE` | OpenSSH allowed-signers file |
 
 Details: [Security and threat model](../SECURITY.md).

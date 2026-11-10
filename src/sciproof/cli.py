@@ -374,6 +374,36 @@ def _build_parser() -> argparse.ArgumentParser:
 
     bad.add_argument("--clean-env", action="store_true", help="with --rerun: minimal environment")
 
+    bad.add_argument(
+        "--pass-env",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="with --clean-env: also pass this environment variable; repeatable",
+    )
+
+    bad.add_argument(
+        "--strict-env",
+        action="store_true",
+        help="fail or report inconclusive if the environment differs on rerun",
+    )
+
+    bad.add_argument(
+        "--allowed-signers",
+        type=Path,
+        metavar="FILE",
+        help="also check the signature <manifest>.sig against this OpenSSH allowed-signers "
+        "file; a missing signature is INCONCLUSIVE, a wrong one FAIL",
+    )
+
+    bad.add_argument(
+        "--policy",
+        type=Path,
+        metavar="FILE",
+        help="also check the rules of this policy file (TOML) against the evidence; see "
+        "docs/POLICY.md",
+    )
+
     bad.add_argument("--timeout", type=float, default=3600.0, metavar="SECONDS")
 
     rec = sub.add_parser(
@@ -475,7 +505,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     cal.add_argument("manifest", type=Path)
 
-    cal.add_argument("--runs", type=int, default=5, metavar="N", help="2 to 50 (default 5)")
+    cal.add_argument("--runs", type=int, default=None, metavar="N", help="2 to 50 (default 5)")
 
     cal.add_argument(
         "--seeds",
@@ -947,9 +977,13 @@ def _run_badge(args: argparse.Namespace) -> int:
         args.manifest,
         rerun=args.rerun,
         assume_yes=args.yes,
+        strict_env=args.strict_env,
         timeout=args.timeout,
         confirm=_confirm if args.rerun and not args.yes else None,
         clean_env=args.clean_env,
+        pass_env=args.pass_env,
+        allowed_signers=args.allowed_signers,
+        policy=args.policy,
     )
 
     _write_user_file(args.output, render_badge(report.status, rerun=report.rerun_executed))
@@ -1057,6 +1091,8 @@ def _run_calibrate(args: argparse.Namespace) -> int:
             ) from exc
         if len(seeds) < 2:
             raise UsageError("--seeds must specify at least 2 seeds")
+        if len(seeds) > 50:
+            raise UsageError("--seeds cannot specify more than 50 seeds")
 
     threads = None
     if getattr(args, "threads", None):
@@ -1068,8 +1104,22 @@ def _run_calibrate(args: argparse.Namespace) -> int:
             ) from exc
         if len(threads) < 2:
             raise UsageError("--threads must specify at least 2 thread counts")
+        if len(threads) > 50:
+            raise UsageError("--threads cannot specify more than 50 thread counts")
         if any(t < 1 for t in threads):
             raise UsageError("thread counts must be positive integers")
+
+    if args.runs is not None:
+        if seeds is not None and args.runs != len(seeds):
+            raise UsageError(
+                f"conflicting options: --runs ({args.runs}) "
+                f"does not match number of seeds ({len(seeds)})"
+            )
+        if threads is not None and args.runs != len(threads):
+            raise UsageError(
+                f"conflicting options: --runs ({args.runs}) "
+                f"does not match number of threads ({len(threads)})"
+            )
 
     report = calibrate(
         args.manifest,

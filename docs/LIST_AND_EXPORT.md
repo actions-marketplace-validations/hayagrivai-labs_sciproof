@@ -46,6 +46,34 @@ writes the manifest as an [in-toto Statement v1](https://github.com/in-toto/atte
   environment variables and packages, the Git state, how each output is compared (`exact` or the
   numeric tolerance), and the claims as text.
 
+### Predicate: experiment v1 <a id="experiment-v1"></a>
+
+The in-toto Statement's `predicateType` identifies this predicate definition:
+
+`https://hayagrivai-labs.github.io/sciproof/docs/export/#experiment-v1`
+
+Every key in `predicate` is documented below:
+
+| Field | Type | Optional | Description |
+| --- | --- | --- | --- |
+| `experiment` | string | No | The experiment name recorded in the manifest. |
+| `capturedAt` | string (ISO-8601) | No | Timestamp when the experiment evidence was captured. |
+| `producer` | object | No | Information about the producer: `name` ("sciproof"), `version` (SciProof version), and `manifestSchemaVersion`. |
+| `manifestDigest` | object | No | Digest of the manifest file itself: `{"sha256": "..."}`. |
+| `command` | array of strings | No | The exact command line arguments (`argv`) executed. |
+| `execution` | object | No | Execution metadata: `exitCode` (integer) and `durationSeconds` (float). |
+| `materials` | array of objects | No | Declared inputs with their paths and SHA-256 digests (`[{"name": "...", "digest": {"sha256": "..."}}]`). |
+| `environment` | object | No | Environment details: `python` version/implementation, `platform` details, `variables` (dictionary of captured environment variables), `packages` (list of captured dependencies with `name` and `version`), `recordedBy` (audit hook source, e.g. "audit-hook"), and `hardware` details (if recorded). |
+| `git` | object or null | Yes | Git repository information: `commit`, `branch`, `dirty` boolean, and `remote` URL if run inside a Git repository. |
+| `note` | string or null | Yes | User-provided note or description for the experiment. |
+| `outputs` | array of objects | No | Declared outputs: `name` (relative path), `present` (boolean), and `compare` mode (`exact` or `numeric` with `rtol`/`atol`). |
+| `claims` | array of strings | No | Verified numeric claims in human-readable claim syntax (e.g. `$.accuracy >= 0.9`). |
+| `notes` | array of strings | No | Integrity and scope statements (e.g. attestation requirements and interpretation caveats). |
+
+#### Versioning rule
+
+The `#experiment-v1` predicate definition is stable. Breaking changes or removals will introduce a new predicate type URI (`#experiment-v2`), while additive non-breaking fields may be added within `v1`.
+
 **The Statement is not signed and is not an attestation by itself.** In-toto Statements are
 normally wrapped in a signed envelope (DSSE) by the tool that attests them; that step is left to
 such a tool, and `sciproof sign` signs the manifest itself. The Statement keeps the hashes but not
@@ -71,8 +99,23 @@ This is **lineage only**: which files were read and written, and whether the com
 carries no hashes and no verdict, because no standard facet for them was verified; use the in-toto
 export or the manifest for that.
 
-An export to RO-Crate (Process Run Crate) is not implemented; see the
-[design note](DESIGN_RO_CRATE.md) for the open questions.
+## `--format ro-crate`: Workflow Run RO-Crate
+
+Export the manifest to [RO-Crate](https://www.researchobject.org/ro-crate/) (conforming to the [Process Run Crate 0.6](https://w3id.org/ro/wfrun/process/0.6) profile):
+
+```bash
+sciproof export baseline.sciproof.json --format ro-crate -o ro-crate-metadata.json
+```
+
+The output is a single JSON-LD file (`@context: "https://w3id.org/ro/crate/1.1/context"`) describing the experiment run:
+
+* **Root Dataset (`@id: "./"`)**: Declares `@type: "Dataset"` and conforms to the `https://w3id.org/ro/wfrun/process/0.6` profile. It mentions the `#run` execution action and includes all declared inputs and outputs in `hasPart`.
+* **Metadata Descriptor (`@id: "ro-crate-metadata.json"`)**: Identifies the metadata document and its conformance to `https://w3id.org/ro/crate/1.1`.
+* **Execution Action (`@id: "#run"`)**: A `CreateAction` recording the command (`description`), approximate start and end timestamps (`startTime`, `endTime`), execution outcome (`actionStatus`: `CompletedActionStatus` or `FailedActionStatus`), captured environment variables as `PropertyValue` entities, declared inputs in `object`, and declared outputs in `result`.
+* **Instrument (`@id: "#tool"`)**: A `SoftwareApplication` entity identifying `sciproof` and its version.
+* **Files and Datasets**: Each input and output file is represented as an entity with `@type: "File"` (or `@type: "Dataset"` for directories), including its relative path, `contentSize` (in bytes), and `sha256` digest.
+
+Note that RO-Crate is a descriptive provenance and metadata interchange format; it records what was executed and preserves cryptographic digests for external platforms, but does not embed SciProof-specific tolerance rules or claim verification verdicts (see [DESIGN_RO_CRATE.md](DESIGN_RO_CRATE.md)).
 
 ## `--format dsse`: in-toto Statement in DSSE envelope
 
@@ -126,6 +169,9 @@ In the paper: `\input{numbers.tex}` and then `accuracy \accuracy{}`.
 * `--value NAME OUTPUT LOCATION`: `NAME` is the macro name (1 to 40 letters; `\newcommand` stops
   with an error if it is already defined), `OUTPUT` a declared `.json`, `.csv` or `.tsv` output,
   `LOCATION` the same form as in [claims](CLAIMS.md) (`$.key[0].name`, or `r2c1` for a table).
+  If `--value` is omitted, value locations across declared numeric outputs are automatically exported
+  (up to 200 values), using location keys for macro names, qualifying collisions with output file stems,
+  and disambiguating further collisions with alphabetical suffixes.
 * **Nothing is written unless the integrity verification of the manifest is `PASS`**: if an output
   was modified since the capture, the export stops with an error and says why. Nothing is
   executed.

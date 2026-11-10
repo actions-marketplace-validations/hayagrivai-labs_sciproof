@@ -193,3 +193,93 @@ def test_files_inside_virtualenvs_and_site_packages_are_never_suggested(tmp_path
     assert found.exit_code == 0
     assert found.inside == []
     assert found.outside == []
+
+
+# ------------------------------------------------------- simulated hook lines
+
+
+def test_an_unparseable_hook_line_is_skipped_without_crashing(tmp_path):
+    """A line in the audit log that is not valid hex is ignored, not a crash or a suggestion."""
+    (tmp_path / "run.py").write_text(
+        "import os\nopen(os.environ['SCIPROOF_AUDIT_LOG'], 'ab').write(b'not-a-hex-line\\n')\n"
+    )
+    found = suggest_inputs([sys.executable, "run.py"], tmp_path, ["run.py"])
+    assert found.exit_code == 0
+    assert found.inside == [] and found.outside == []
+
+
+def test_a_pyc_hook_line_is_reported_as_its_python_source(tmp_path):
+    """A ``__pycache__`` ``.pyc`` observation resolves to the ``.py`` the run depends on.
+
+    The line is fed to the audit log directly (the source is never imported or opened),
+    so the resolution is pinned without relying on import machinery internals.
+    """
+    pkg = tmp_path / "pkg"
+    (pkg / "__pycache__").mkdir(parents=True)
+    (pkg / "mymod.py").write_text("VALUE = 1\n")
+    pyc = pkg / "__pycache__" / "mymod.cpython-313.pyc"
+    (tmp_path / "run.py").write_text(
+        "import os\n"
+        f"open(os.environ['SCIPROOF_AUDIT_LOG'], 'ab').write("
+        f"os.fsencode({str(pyc)!r}).hex().encode() + b'\\n')\n"
+    )
+    found = suggest_inputs([sys.executable, "run.py"], tmp_path, ["run.py"])
+    assert found.exit_code == 0
+    assert found.inside == ["pkg/mymod.py"]
+
+
+def test_suggest_inputs_chains_to_existing_sitecustomize(tmp_path, monkeypatch):
+    """The injected sitecustomize must chain to any pre-existing sitecustomize on PYTHONPATH."""
+    import os
+
+    site_dir = tmp_path / "site"
+    site_dir.mkdir()
+    (site_dir / "sitecustomize.py").write_text(
+        "import builtins\nbuiltins.PROJECT_SETUP = 'done'\n", encoding="utf-8"
+    )
+    (tmp_path / "data.txt").write_text("hello\n", encoding="utf-8")
+    (tmp_path / "run.py").write_text(
+        "import builtins, json\n"
+        "data = open('data.txt').read()\n"
+        "setup = getattr(builtins, 'PROJECT_SETUP', 'missing')\n"
+        "json.dump({'setup': setup, 'data': data}, open('out.json', 'w'))\n",
+        encoding="utf-8",
+    )
+    existing = os.environ.get("PYTHONPATH")
+    monkeypatch.setenv("PYTHONPATH", str(site_dir) + (os.pathsep + existing if existing else ""))
+
+    found = suggest_inputs([sys.executable, "run.py"], tmp_path, ["run.py"])
+    assert found.exit_code == 0
+    assert "data.txt" in found.inside
+    import json
+
+    output = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
+    assert output["setup"] == "done"
+
+
+def test_record_with_existing_sitecustomize_declares_outputs_stable(tmp_path, monkeypatch):
+    """record run 1 (with hook) and run 2 (without) both execute user sitecustomize."""
+    import json
+    import os
+
+    from sciproof.record import record
+
+    site_dir = tmp_path / "site"
+    site_dir.mkdir()
+    (site_dir / "sitecustomize.py").write_text(
+        "import builtins\nbuiltins.PROJECT_SETUP = 'done'\n", encoding="utf-8"
+    )
+    (tmp_path / "run.py").write_text(
+        "import builtins, json\n"
+        "setup = getattr(builtins, 'PROJECT_SETUP', 'missing')\n"
+        "json.dump({'setup': setup}, open('out.json', 'w'))\n",
+        encoding="utf-8",
+    )
+    existing = os.environ.get("PYTHONPATH")
+    monkeypatch.setenv("PYTHONPATH", str(site_dir) + (os.pathsep + existing if existing else ""))
+
+    result = record(name="exp", argv=[sys.executable, "run.py"], base=tmp_path)
+    assert "out.json" in (result.exact + result.numeric)
+    assert not any(path == "out.json" for path, _ in result.excluded)
+    output = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
+    assert output["setup"] == "done"

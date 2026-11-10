@@ -148,6 +148,34 @@ def test_markdown_escapes_file_names_and_errors():
     assert "a\\|b&lt;script&gt;" in text
 
 
+def test_markdown_includes_note_column():
+    entry_with_note = Entry(
+        file="exp1.sciproof.json",
+        name="exp1",
+        created_at="2026-11-10",
+        exit_code=0,
+        note="baseline run with lr=0.01 | important",
+    )
+    entry_without_note = Entry(
+        file="exp2.sciproof.json",
+        name="exp2",
+        created_at="2026-11-10",
+        exit_code=0,
+    )
+    invalid_entry = Entry(file="corrupt.sciproof.json", error="bad manifest")
+
+    text = format_markdown([entry_with_note, entry_without_note, invalid_entry], False)
+
+    assert "| File | Name | Captured | Exit | Git | Signed | Result | Note |" in text
+    assert "| --- | --- | --- | --- | --- | --- | --- | --- |" in text
+    # Note with pipe character properly escaped
+    assert "baseline run with lr=0.01 \\| important" in text
+    # No note displays as '-'
+    assert "| exp2.sciproof.json | exp2 | 2026-11-10 | 0 | - | no | - | - |" in text
+    # Invalid entry maintains table column count
+    assert "| corrupt.sciproof.json | | | | | | INVALID: bad manifest | |" in text
+
+
 # ---------------------------------------------------------- formatting tests
 
 
@@ -263,6 +291,26 @@ def test_the_predicate_describes_the_run_and_says_it_is_unsigned(project):
         "out/result.json": "numeric",
     }
     assert all("snapshot" not in o["compare"] for o in predicate["outputs"])
+
+
+def test_in_toto_predicate_keys_are_documented(project):
+    from pathlib import Path
+
+    project.capture(claims=[("out/result.json", "$.value >= 1")])
+    predicate = to_in_toto(project.manifest)["predicate"]
+
+    repo_root = Path(__file__).resolve().parent.parent
+    docs = (repo_root / "docs" / "LIST_AND_EXPORT.md").read_text(encoding="utf-8")
+
+    # Assert anchor exists for PREDICATE_TYPE
+    anchor = PREDICATE_TYPE.split("#")[-1]
+    assert f'id="{anchor}"' in docs
+
+    # Assert every key emitted in predicate is documented
+    for key in predicate:
+        assert f"`{key}`" in docs, (
+            f"Key {key!r} emitted in in-toto predicate is not documented in docs/LIST_AND_EXPORT.md"
+        )
 
 
 SCRIPT = (
